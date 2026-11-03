@@ -1,0 +1,338 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>NYC Taxi Analytics</title>
+<meta name="description" content="19.5 million NYC yellow-taxi trips (Jan–Jun 2024) through a DuckDB medallion pipeline with data-quality gates: demand, revenue, airports, tipping and routes.">
+<meta name="claude:viewport-fit-sides" content="cover">
+<style>
+/* Layout: one analytics page; headline KPIs, then a 2-column grid of charts, then data quality */
+:root{
+  color-scheme:light;
+  --page:#f9f9f7; --surface-1:#fcfcfb; --text-primary:#0b0b0b; --text-secondary:#52514e; --muted:#898781;
+  --grid:#e1e0d9; --axis:#c3c2b7; --ring:rgba(11,11,11,.10);
+  --series-1:#2a78d6; --series-2:#eb6834;
+  --seq-0:#cde2fb; --seq-1:#0d366b;
+  --good:#0ca30c; --good-text:#006300; --critical:#d03b3b; --warning:#fab219;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  color-scheme:dark;
+  --page:#0d0d0d; --surface-1:#1a1a19; --text-primary:#f0efec; --text-secondary:#c3c2b7; --muted:#898781;
+  --grid:#2c2c2a; --axis:#383835; --ring:rgba(255,255,255,.10);
+  --series-1:#3987e5; --series-2:#d95926;
+  --seq-0:#1d2a3b; --seq-1:#86b6ef;
+  --good-text:#0ca30c;
+}}
+:root[data-theme="dark"]{
+  color-scheme:dark;
+  --page:#0d0d0d; --surface-1:#1a1a19; --text-primary:#f0efec; --text-secondary:#c3c2b7; --muted:#898781;
+  --grid:#2c2c2a; --axis:#383835; --ring:rgba(255,255,255,.10);
+  --series-1:#3987e5; --series-2:#d95926;
+  --seq-0:#1d2a3b; --seq-1:#86b6ef;
+  --good-text:#0ca30c;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--page);color:var(--text-primary);font:400 15px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}
+.wrap{max-width:1240px;margin-inline:auto;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+a{color:var(--series-1)}
+header .wrap{padding-block:32px 8px;display:grid;gap:10px}
+.eyebrow{margin:0;font-size:12px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--text-secondary)}
+h1{margin:0;font-size:clamp(28px,4vw,40px);line-height:1.1;letter-spacing:-.01em;text-wrap:balance}
+.lede{margin:0;max-width:75ch;color:var(--text-secondary)}
+.chips{display:flex;flex-wrap:wrap;gap:8px}
+.chip{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;padding:4px 10px;border-radius:999px;border:1px solid var(--ring);background:var(--surface-1);color:var(--text-secondary)}
+.chip.good{color:var(--good-text)}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;padding-block:18px}
+.kpi{background:var(--surface-1);border:1px solid var(--ring);border-radius:12px;padding:14px 16px;display:grid;gap:2px}
+.kpi span{font-size:12.5px;color:var(--text-secondary)}
+.kpi b{font-size:26px;font-weight:600;line-height:1.2}
+.kpi small{font-size:12px;color:var(--muted)}
+.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;align-items:start}
+.grid .wide{grid-column:1/-1}
+@media (max-width:860px){.grid{grid-template-columns:1fr}}
+.card{background:var(--surface-1);border:1px solid var(--ring);border-radius:12px;padding:16px 16px 12px;display:grid;gap:8px;min-width:0}
+.card h2{margin:0;font-size:15px;font-weight:600}
+.card .sub{margin:0;font-size:13px;color:var(--text-secondary)}
+.card .finding{margin:0;font-size:13.5px;color:var(--text-primary);border-top:1px solid var(--grid);padding-top:8px}
+.chart{position:relative;height:240px}
+.chart.tall{height:300px}
+.legend{display:flex;gap:14px;flex-wrap:wrap;font-size:12.5px;color:var(--text-secondary)}
+.legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px;vertical-align:-1px}
+details{font-size:12.5px;color:var(--text-secondary)}
+details summary{cursor:pointer;width:max-content}
+.tbl{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:tabular-nums}
+th{text-align:left;font-weight:600;color:var(--text-secondary);padding:6px 10px 6px 0;border-bottom:1px solid var(--axis);white-space:nowrap}
+td{padding:6px 10px 6px 0;border-bottom:1px solid var(--grid);white-space:nowrap}
+td.num,th.num{text-align:right}
+.heat{display:grid;grid-template-columns:36px repeat(24,minmax(0,1fr));gap:2px;font-size:11px;color:var(--muted)}
+.heat .cell{aspect-ratio:1/1;border-radius:3px;min-height:12px;cursor:default}
+.heat .lab{display:flex;align-items:center;font-size:11px;color:var(--text-secondary)}
+.heat .hr{text-align:center}
+.scale{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-secondary)}
+.scale .bar{height:8px;width:160px;border-radius:4px}
+.tip{position:fixed;pointer-events:none;z-index:10;background:var(--surface-1);color:var(--text-primary);border:1px solid var(--ring);box-shadow:0 6px 20px rgba(0,0,0,.18);border-radius:8px;padding:8px 10px;font-size:12.5px;line-height:1.45;display:none}
+.toggle{display:inline-flex;border:1px solid var(--ring);border-radius:8px;overflow:hidden}
+.toggle button{border:0;background:none;color:var(--text-secondary);font:inherit;font-size:12.5px;padding:4px 10px;cursor:pointer}
+.toggle button[aria-pressed="true"]{background:var(--text-primary);color:var(--surface-1)}
+.dq{display:grid;gap:6px}
+.dq li{display:grid;grid-template-columns:22px minmax(0,1fr) auto;gap:8px;align-items:baseline;font-size:13px;padding:4px 0;border-bottom:1px solid var(--grid)}
+.dq ul{list-style:none;margin:0;padding:0}
+.dq .ok{color:var(--good-text);font-weight:700}
+.dq .fail{color:var(--critical);font-weight:700}
+.dq .detail{color:var(--text-secondary);font-size:12px;text-align:right}
+.section-title{margin:28px 0 10px;font-size:13px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--text-secondary)}
+.pipeline{display:flex;flex-wrap:wrap;gap:8px;align-items:center;font-size:13px}
+.pipeline span{padding:6px 10px;border-radius:8px;border:1px solid var(--ring);background:var(--surface-1)}
+.pipeline em{font-style:normal;color:var(--muted)}
+footer .wrap{padding-block:24px 40px;font-size:12.5px;color:var(--muted);display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.err{padding:20px;background:var(--surface-1);border:1px solid var(--ring);border-radius:12px}
+:focus-visible{outline:2px solid var(--series-1);outline-offset:2px}
+</style>
+</head>
+<body>
+<header>
+  <div class="wrap">
+    <p class="eyebrow">Data engineering + analytics · DuckDB medallion pipeline</p>
+    <h1>NYC Taxi Analytics</h1>
+    <p class="lede">Every yellow-taxi trip in New York from January to June 2024, from the city's official TLC data. Raw monthly files are ingested, cleaned into a trusted table with bad rows quarantined, checked by a data-quality gate, and modelled into the business tables behind this page.</p>
+    <div class="chips" id="chips"></div>
+  </div>
+</header>
+
+<main class="wrap">
+  <div class="kpis" id="kpis"></div>
+
+  <div class="grid">
+    <section class="card"><h2>Trips per month</h2><p class="sub">Clean trips after quality filtering</p><div class="chart"><canvas id="c-trips" aria-label="Bar chart of trips per month"></canvas></div><p class="finding" id="f-trips"></p></section>
+    <section class="card"><h2>Revenue per month</h2><p class="sub">Total charged to riders, USD</p><div class="chart"><canvas id="c-rev" aria-label="Bar chart of revenue per month"></canvas></div><p class="finding" id="f-rev"></p></section>
+
+    <section class="card wide"><h2>Daily trips</h2><p class="sub">Hover for the date; dips are holidays, storms and Sundays</p><div class="chart"><canvas id="c-daily" aria-label="Line chart of trips per day"></canvas></div><p class="finding" id="f-daily"></p></section>
+
+    <section class="card wide">
+      <div style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;align-items:center">
+        <div><h2>When New York takes a taxi</h2><p class="sub" id="heat-sub">Average trips per hour, by weekday and hour of pickup (stronger blue = busier)</p></div>
+        <div class="toggle" role="group" aria-label="Heatmap measure"><button type="button" data-m="trips_per_day" aria-pressed="true">Trips</button><button type="button" data-m="avg_mph" aria-pressed="false">Speed (mph)</button></div>
+      </div>
+      <div class="heat" id="heat" role="img" aria-label="Heatmap of trips by weekday and hour"></div>
+      <div class="scale"><span id="scale-lo"></span><span class="bar" id="scale-bar"></span><span id="scale-hi"></span></div>
+      <p class="finding" id="f-heat"></p>
+    </section>
+
+    <section class="card"><h2>Share of trips vs share of revenue</h2><p class="sub">Pickup borough, Jan–Jun 2024</p>
+      <div class="legend"><span><i style="background:var(--series-1)"></i>Share of trips</span><span><i style="background:var(--series-2)"></i>Share of revenue</span></div>
+      <div class="chart"><canvas id="c-borough" aria-label="Grouped bar chart of trip and revenue share by borough"></canvas></div><p class="finding" id="f-borough"></p></section>
+
+    <section class="card"><h2>Airport trips: average total paid</h2><p class="sub">Trips starting at vs ending at each airport</p>
+      <div class="legend"><span><i style="background:var(--series-1)"></i>From airport</span><span><i style="background:var(--series-2)"></i>To airport</span></div>
+      <div class="chart"><canvas id="c-air" aria-label="Grouped bar chart of average total by airport"></canvas></div><p class="finding" id="f-air"></p></section>
+
+    <section class="card"><h2>Tip as % of fare, by trip length</h2><p class="sub">Card payments only (cash tips aren't recorded)</p><div class="chart"><canvas id="c-tip" aria-label="Bar chart of tip percentage by distance"></canvas></div><p class="finding" id="f-tip"></p></section>
+
+    <section class="card"><h2>How riders pay</h2><p class="sub">Share of trips by payment type</p><div class="chart"><canvas id="c-pay" aria-label="Bar chart of payment type share"></canvas></div><p class="finding" id="f-pay"></p></section>
+
+    <section class="card wide"><h2>Busiest routes</h2><p class="sub">Top 10 pickup → drop-off zone pairs</p><div class="tbl"><table id="t-routes"></table></div><p class="finding" id="f-routes"></p></section>
+  </div>
+
+  <p class="section-title">Data engineering</p>
+  <div class="grid">
+    <section class="card wide"><h2>Pipeline</h2>
+      <div class="pipeline"><span>NYC TLC Parquet (bronze)</span><em>→</em><span>typed, cleaned, de-duplicated (silver)</span><em>→</em><span>quarantine with reason</span><em>→</em><span>data-quality gate</span><em>→</em><span>10 business marts (gold)</span><em>→</em><span>this dashboard</span></div>
+      <div class="tbl"><table id="t-load"></table></div>
+    </section>
+    <section class="card"><h2>Why rows were quarantined</h2><p class="sub">Share of all raw rows, Jan–Jun 2024</p><div class="chart tall"><canvas id="c-q" aria-label="Bar chart of quarantine reasons"></canvas></div><p class="finding" id="f-q"></p></section>
+    <section class="card dq"><h2>Data-quality checks</h2><p class="sub" id="dq-sub"></p><ul id="dq"></ul></section>
+  </div>
+</main>
+
+<footer><div class="wrap"><span>NYC Taxi Analytics · Sudha Rani Seeli · Source: NYC Taxi &amp; Limousine Commission trip records</span><a href="https://github.com/sudhaseeli/nyc-taxi-analytics">Code on GitHub</a></div></footer>
+<div class="tip" id="tip" role="tooltip"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script>
+(async () => {
+  const $ = (id) => document.getElementById(id);
+  const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+  const fmtN = (n) => Math.round(n).toLocaleString('en-US');
+  const fmtM = (n) => (n / 1e6).toFixed(n >= 1e8 ? 0 : 1) + 'M';
+  const usd = (n) => '$' + Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const usdM = (n) => '$' + (n / 1e6).toFixed(1) + 'M';
+  const MONTH = { '01': 'Jan', '02': 'Feb', '03': 'Mar', '04': 'Apr', '05': 'May', '06': 'Jun', '07': 'Jul', '08': 'Aug', '09': 'Sep', '10': 'Oct', '11': 'Nov', '12': 'Dec' };
+  const mlabel = (m) => MONTH[m.slice(5)] + ' ' + m.slice(2, 4);
+
+  let D;
+  try { D = await (await fetch('data/dashboard.json')).json(); }
+  catch (e) { document.querySelector('main').innerHTML = '<div class="err">The dashboard data could not be loaded. Run <code>taxi run</code> to build <code>docs/data/dashboard.json</code>.</div>'; return; }
+
+  // ---------- headline numbers ----------
+  const M = D.monthly, trips = M.reduce((s, r) => s + r.trips, 0), revenue = M.reduce((s, r) => s + r.revenue, 0);
+  const raw = D.load_stats.reduce((s, r) => s + r.bronze_rows, 0), quar = D.load_stats.reduce((s, r) => s + r.quarantined_rows, 0);
+  const avgFare = M.reduce((s, r) => s + r.avg_fare * r.trips, 0) / trips;
+  const tip = M.reduce((s, r) => s + r.avg_tip_pct_card * r.trips * r.card_share_pct, 0) / M.reduce((s, r) => s + r.trips * r.card_share_pct, 0);
+  const first = M[0], last = M[M.length - 1], peak = M.reduce((a, b) => (b.trips > a.trips ? b : a));
+  const dq = D.data_quality, passed = dq ? dq.checks.filter((c) => c.passed).length : 0;
+  $('chips').innerHTML = `<span class="chip">${mlabel(first.month)} – ${mlabel(last.month)}</span><span class="chip">${fmtN(raw)} raw rows</span>` +
+    (dq ? `<span class="chip ${dq.passed ? 'good' : ''}">${dq.passed ? '✓' : '✗'} ${passed}/${dq.checks.length} quality checks passed</span>` : '');
+  const kpis = [
+    ['Clean trips', fmtM(trips), `${fmtN(trips)} trips`],
+    ['Revenue', usdM(revenue), 'total charged to riders'],
+    ['Average fare', usd(avgFare), 'metered fare before extras'],
+    ['Average card tip', tip.toFixed(1) + '%', 'of the fare'],
+    ['Quarantined', (100 * quar / raw).toFixed(1) + '%', `${fmtN(quar)} rows with a reason`],
+  ];
+  $('kpis').innerHTML = kpis.map(([k, v, s]) => `<div class="kpi"><span>${k}</span><b>${v}</b><small>${s}</small></div>`).join('');
+
+  // ---------- chart defaults ----------
+  Chart.defaults.font.family = 'system-ui, -apple-system, "Segoe UI", sans-serif';
+  Chart.defaults.font.size = 12;
+  const charts = [];
+  const base = (yFmt, extra = {}) => ({
+    responsive: true, maintainAspectRatio: false, animation: false,
+    plugins: { legend: { display: false }, tooltip: { backgroundColor: css('--surface-1'), titleColor: css('--text-primary'), bodyColor: css('--text-secondary'), borderColor: css('--ring'), borderWidth: 1, padding: 10, displayColors: true, boxPadding: 4 } },
+    scales: {
+      x: { grid: { display: false }, border: { color: css('--axis') }, ticks: { color: css('--muted') } },
+      y: { beginAtZero: true, grid: { color: css('--grid') }, border: { display: false }, ticks: { color: css('--muted'), callback: yFmt } },
+    },
+    ...extra,
+  });
+  const bar = (color) => ({ backgroundColor: css(color), borderRadius: { topLeft: 4, topRight: 4 }, borderSkipped: 'bottom', maxBarThickness: 44, borderWidth: 0 });
+  function make(id, cfg) { const c = new Chart($(id), cfg); charts.push([id, cfg, c]); return c; }
+
+  function drawAll() {
+    charts.splice(0).forEach(([, , c]) => c.destroy());
+    make('c-trips', { type: 'bar', data: { labels: M.map((r) => mlabel(r.month)), datasets: [{ label: 'Trips', data: M.map((r) => r.trips), ...bar('--series-1') }] },
+      options: base((v) => (v / 1e6).toFixed(1) + 'M', {}) });
+    charts[0][2].options.plugins.tooltip.callbacks = { label: (c) => ` ${fmtN(c.raw)} trips` };
+    make('c-rev', { type: 'bar', data: { labels: M.map((r) => mlabel(r.month)), datasets: [{ label: 'Revenue', data: M.map((r) => r.revenue), ...bar('--series-1') }] },
+      options: base((v) => '$' + (v / 1e6).toFixed(0) + 'M') });
+    charts[1][2].options.plugins.tooltip.callbacks = { label: (c) => ` ${usd(c.raw)}` };
+
+    const daily = D.daily;
+    make('c-daily', { type: 'line', data: { labels: daily.map((r) => r.date), datasets: [{ label: 'Trips', data: daily.map((r) => r.trips), borderColor: css('--series-1'), borderWidth: 2, pointRadius: 0, pointHoverRadius: 5, pointHoverBackgroundColor: css('--series-1'), pointHoverBorderColor: css('--surface-1'), pointHoverBorderWidth: 2, tension: 0 }] },
+      options: base((v) => (v / 1000).toFixed(0) + 'k', { interaction: { mode: 'index', intersect: false } }) });
+    const dc = charts[2][2];
+    dc.options.scales.x.ticks = { color: css('--muted'), maxTicksLimit: 7, callback(v) { const d = this.getLabelForValue(v); return MONTH[d.slice(5, 7)] + ' ' + +d.slice(8); } };
+    dc.options.plugins.tooltip.callbacks = { title: (it) => new Date(it[0].label + 'T12:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' }), label: (c) => ` ${fmtN(c.raw)} trips` };
+
+    const b = ['Manhattan', 'Queens', 'Brooklyn', 'Bronx'];
+    const tot = {}, totT = D.borough_monthly.reduce((s, r) => s + r.trips, 0), totR = D.borough_monthly.reduce((s, r) => s + r.revenue, 0);
+    D.borough_monthly.forEach((r) => { const k = b.includes(r.borough) ? r.borough : 'Other'; tot[k] = tot[k] || { t: 0, r: 0 }; tot[k].t += r.trips; tot[k].r += r.revenue; });
+    const bl = [...b, 'Other'];
+    make('c-borough', { type: 'bar', data: { labels: bl, datasets: [
+      { label: 'Share of trips', data: bl.map((k) => (100 * (tot[k]?.t || 0)) / totT), ...bar('--series-1') },
+      { label: 'Share of revenue', data: bl.map((k) => (100 * (tot[k]?.r || 0)) / totR), ...bar('--series-2') }] },
+      options: base((v) => v + '%', { datasets: { bar: { categoryPercentage: 0.7, barPercentage: 0.9 } } }) });
+    charts[3][2].options.plugins.tooltip.callbacks = { label: (c) => ` ${c.dataset.label}: ${c.raw.toFixed(1)}%` };
+
+    const ap = ['JFK', 'LGA', 'EWR'], A = (a, d) => D.airports.find((r) => r.airport === a && r.direction === d);
+    make('c-air', { type: 'bar', data: { labels: ap, datasets: [
+      { label: 'From airport', data: ap.map((a) => A(a, 'from airport')?.avg_total ?? null), ...bar('--series-1') },
+      { label: 'To airport', data: ap.map((a) => A(a, 'to airport')?.avg_total ?? null), ...bar('--series-2') }] },
+      options: base((v) => '$' + v, { datasets: { bar: { categoryPercentage: 0.7, barPercentage: 0.9 } } }) });
+    charts[4][2].options.plugins.tooltip.callbacks = { label: (c) => { const r = A(c.label, c.datasetIndex ? 'to airport' : 'from airport'); return ` ${c.dataset.label}: ${usd(c.raw)} avg · ${fmtN(r.trips)} trips · ${r.avg_duration_min} min`; } };
+
+    make('c-tip', { type: 'bar', data: { labels: D.tip_by_distance.map((r) => r.distance_band), datasets: [{ label: 'Tip %', data: D.tip_by_distance.map((r) => r.avg_tip_pct), ...bar('--series-1') }] },
+      options: base((v) => v + '%') });
+    charts[5][2].options.plugins.tooltip.callbacks = { label: (c) => { const r = D.tip_by_distance[c.dataIndex]; return ` ${c.raw}% of fare · avg ${usd(r.avg_tip)} · ${fmtN(r.card_trips)} trips`; } };
+
+    make('c-pay', { type: 'bar', data: { labels: D.payment.map((r) => r.payment), datasets: [{ label: 'Share', data: D.payment.map((r) => r.share_pct), backgroundColor: css('--series-1'), borderRadius: { topRight: 4, bottomRight: 4 }, borderSkipped: 'left', maxBarThickness: 26 }] },
+      options: { ...base((v) => v + '%'), indexAxis: 'y' } });
+    const pc = charts[6][2];
+    pc.options.scales = { x: { beginAtZero: true, grid: { color: css('--grid') }, border: { display: false }, ticks: { color: css('--muted'), callback: (v) => v + '%' } }, y: { grid: { display: false }, border: { color: css('--axis') }, ticks: { color: css('--text-secondary') } } };
+    pc.options.plugins.tooltip.callbacks = { label: (c) => { const r = D.payment[c.dataIndex]; return ` ${c.raw}% · ${fmtN(r.trips)} trips · avg ${usd(r.avg_total)}`; } };
+
+    const Q = {};
+    D.quarantine_summary.forEach((r) => (Q[r.reason] = (Q[r.reason] || 0) + r.rows));
+    const qs = Object.entries(Q).sort((a, b) => b[1] - a[1]).slice(0, 7);
+    make('c-q', { type: 'bar', data: { labels: qs.map(([k]) => k.replaceAll('_', ' ')), datasets: [{ label: 'Rows', data: qs.map(([, v]) => (100 * v) / raw), backgroundColor: css('--series-1'), borderRadius: { topRight: 4, bottomRight: 4 }, borderSkipped: 'left', maxBarThickness: 22 }] },
+      options: { ...base((v) => v + '%'), indexAxis: 'y' } });
+    const qc = charts[7][2];
+    qc.options.scales = { x: { beginAtZero: true, grid: { color: css('--grid') }, border: { display: false }, ticks: { color: css('--muted'), callback: (v) => v.toFixed(1) + '%' } }, y: { grid: { display: false }, border: { color: css('--axis') }, ticks: { color: css('--text-secondary') } } };
+    qc.options.plugins.tooltip.callbacks = { label: (c) => ` ${c.raw.toFixed(2)}% · ${fmtN(qs[c.dataIndex][1])} rows` };
+    charts.forEach(([, , c]) => c.update());
+    drawHeat();
+  }
+
+  // ---------- heatmap ----------
+  const DOW = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+  let measure = 'trips_per_day';
+  const hexMix = (a, b, t) => { const p = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16)); const x = p(a), y = p(b); return `rgb(${x.map((v, i) => Math.round(v + (y[i] - v) * t)).join(',')})`; };
+  function drawHeat() {
+    const H = D.hourly_heatmap, vals = H.map((r) => r[measure]), lo = Math.min(...vals), hi = Math.max(...vals);
+    const c0 = css('--seq-0'), c1 = css('--seq-1');
+    let html = '<span></span>' + Array.from({ length: 24 }, (_, h) => `<span class="hr">${h % 3 === 0 ? h : ''}</span>`).join('');
+    for (let d = 1; d <= 7; d++) {
+      html += `<span class="lab">${DOW[d - 1]}</span>`;
+      for (let h = 0; h < 24; h++) {
+        const r = H.find((x) => x.dow === d && x.hour === h);
+        const t = r ? (r[measure] - lo) / (hi - lo || 1) : 0;
+        html += `<span class="cell" tabindex="-1" data-d="${d}" data-h="${h}" style="background:${hexMix(c0, c1, t)}"></span>`;
+      }
+    }
+    $('heat').innerHTML = html;
+    const fmt = (v) => (measure === 'avg_mph' ? v.toFixed(1) + ' mph' : fmtN(v) + ' trips/hr');
+    $('scale-lo').textContent = fmt(lo); $('scale-hi').textContent = fmt(hi);
+    $('scale-bar').style.background = `linear-gradient(90deg, ${c0}, ${c1})`;
+    $('heat-sub').textContent = measure === 'avg_mph' ? 'Average taxi speed, by weekday and hour of pickup (stronger blue = faster)' : 'Average trips per hour, by weekday and hour of pickup (stronger blue = busier)';
+  }
+  const tipEl = $('tip');
+  $('heat').addEventListener('mousemove', (e) => {
+    const c = e.target.closest('.cell');
+    if (!c) { tipEl.style.display = 'none'; return; }
+    const r = D.hourly_heatmap.find((x) => x.dow === +c.dataset.d && x.hour === +c.dataset.h);
+    const h = +c.dataset.h, hl = `${((h + 11) % 12) + 1} ${h < 12 ? 'am' : 'pm'}`;
+    tipEl.innerHTML = `<b>${DOW[r.dow - 1]} ${hl}</b><br>${fmtN(r.trips_per_day)} trips/hr · ${r.avg_mph} mph · avg fare ${usd(r.avg_fare)}`;
+    tipEl.style.display = 'block';
+    tipEl.style.left = Math.min(innerWidth - 260, e.clientX + 14) + 'px'; tipEl.style.top = e.clientY + 14 + 'px';
+  });
+  $('heat').addEventListener('mouseleave', () => (tipEl.style.display = 'none'));
+  document.querySelectorAll('.toggle button').forEach((b) => b.addEventListener('click', () => {
+    measure = b.dataset.m;
+    document.querySelectorAll('.toggle button').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
+    drawHeat();
+  }));
+
+  // ---------- tables ----------
+  $('t-routes').innerHTML = '<thead><tr><th>#</th><th>Pickup zone</th><th>Drop-off zone</th><th class="num">Trips</th><th class="num">Avg fare</th><th class="num">Avg time</th><th class="num">Avg distance</th></tr></thead><tbody>' +
+    D.top_routes.slice(0, 10).map((r, i) => `<tr><td>${i + 1}</td><td>${r.pickup_zone}</td><td>${r.dropoff_zone}</td><td class="num">${fmtN(r.trips)}</td><td class="num">${usd(r.avg_fare)}</td><td class="num">${r.avg_duration_min} min</td><td class="num">${r.avg_distance} mi</td></tr>`).join('') + '</tbody>';
+  $('t-load').innerHTML = '<thead><tr><th>Month</th><th class="num">Raw rows (bronze)</th><th class="num">Clean (silver)</th><th class="num">Quarantined</th><th class="num">Duplicates</th><th class="num">Quarantine rate</th></tr></thead><tbody>' +
+    D.load_stats.map((r) => `<tr><td>${mlabel(r.source_month)}</td><td class="num">${fmtN(r.bronze_rows)}</td><td class="num">${fmtN(r.silver_rows)}</td><td class="num">${fmtN(r.quarantined_rows)}</td><td class="num">${fmtN(r.duplicate_rows)}</td><td class="num">${((100 * r.quarantined_rows) / r.bronze_rows).toFixed(1)}%</td></tr>`).join('') + '</tbody>';
+  if (dq) {
+    $('dq-sub').textContent = `${passed} of ${dq.checks.length} passed · critical failures stop the pipeline before anything is published`;
+    $('dq').innerHTML = dq.checks.map((c) => `<li><span class="${c.passed ? 'ok' : 'fail'}" aria-label="${c.passed ? 'passed' : 'failed'}">${c.passed ? '✓' : (c.severity === 'critical' ? '✗' : '!')}</span><span>${c.description}<br><small style="color:var(--muted)">${c.severity}</small></span><span class="detail">${c.detail}</span></li>`).join('');
+  }
+
+  // ---------- findings (computed from the data, not hard-coded) ----------
+  const pct = (a, b) => Math.round((100 * (a - b)) / b);
+  $('f-trips').textContent = `Demand grew ${pct(peak.trips, first.trips)}% from ${mlabel(first.month)} to its peak in ${mlabel(peak.month)} (${fmtN(peak.trips)} trips).`;
+  const peakRev = M.reduce((a, b) => (b.revenue > a.revenue ? b : a));
+  $('f-rev').textContent = `Revenue grew faster than trips, up ${pct(peakRev.revenue, first.revenue)}% to ${usdM(peakRev.revenue)} in ${mlabel(peakRev.month)}: the average fare rose from ${usd(first.avg_fare)} to ${usd(peakRev.avg_fare)}, and trips got slower (${first.avg_duration_min} → ${peakRev.avg_duration_min} min).`;
+  const ds = [...D.daily].sort((a, b) => b.trips - a.trips), dl = ds[ds.length - 1], dh = ds[0];
+  const nice = (d) => new Date(d + 'T12:00').toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' });
+  $('f-daily').textContent = `Busiest day: ${nice(dh.date)} (${fmtN(dh.trips)} trips). Quietest: ${nice(dl.date)} (${fmtN(dl.trips)}).`;
+  const HM = D.hourly_heatmap, top = HM.reduce((a, b) => (b.trips_per_day > a.trips_per_day ? b : a)), slow = HM.reduce((a, b) => (b.avg_mph < a.avg_mph ? b : a)), fast = HM.reduce((a, b) => (b.avg_mph > a.avg_mph ? b : a));
+  const hh = (h) => `${((h + 11) % 12) + 1} ${h < 12 ? 'am' : 'pm'}`;
+  $('f-heat').textContent = `Peak demand is ${DOW[top.dow - 1]} ${hh(top.hour)} (${fmtN(top.trips_per_day)} trips/hr). Traffic is slowest ${DOW[slow.dow - 1]} ${hh(slow.hour)} (${slow.avg_mph} mph) and fastest ${DOW[fast.dow - 1]} ${hh(fast.hour)} (${fast.avg_mph} mph), ${(fast.avg_mph / slow.avg_mph).toFixed(1)}× quicker.`;
+  const q = D.borough_monthly.filter((r) => r.borough === 'Queens').reduce((a, r) => ({ t: a.t + r.trips, r: a.r + r.revenue }), { t: 0, r: 0 });
+  const totT = D.borough_monthly.reduce((s, r) => s + r.trips, 0), totR = D.borough_monthly.reduce((s, r) => s + r.revenue, 0);
+  $('f-borough').textContent = `Queens is ${(100 * q.t / totT).toFixed(1)}% of pickups but ${(100 * q.r / totR).toFixed(1)}% of revenue, because it includes JFK and LaGuardia.`;
+  const jfk = D.airports.find((r) => r.airport === 'JFK' && r.direction === 'from airport');
+  $('f-air').textContent = `${fmtN(jfk.trips)} trips left JFK, paying ${usd(jfk.avg_total)} on average. That's ${(100 * jfk.trips / trips).toFixed(1)}% of all trips but ${(100 * jfk.trips * jfk.avg_total / revenue).toFixed(0)}% of revenue.`;
+  const tb = D.tip_by_distance;
+  $('f-tip').textContent = `Short rides tip proportionally more: ${tb[0].avg_tip_pct}% under 1 mile vs ${tb[tb.length - 1].avg_tip_pct}% over 20 miles, consistent with riders rounding up or using the preset tip buttons.`;
+  const card = D.payment.find((r) => r.payment === 'Credit card'), cash = D.payment.find((r) => r.payment === 'Cash');
+  $('f-pay').textContent = `${card.share_pct}% of trips are paid by card, and ${cash.share_pct}% in cash. Card trips average ${usd(card.avg_total)} vs ${usd(cash.avg_total)} for cash.`;
+  const r0 = D.top_routes[0];
+  $('f-routes').textContent = `The busiest route is ${r0.pickup_zone} → ${r0.dropoff_zone}: ${fmtN(r0.trips)} trips averaging ${r0.avg_distance} mi for ${usd(r0.avg_fare)}. Short Upper East Side ↔ Midtown hops dominate the top 10.`;
+  const qTop = Object.entries(D.quarantine_summary.reduce((o, r) => ((o[r.reason] = (o[r.reason] || 0) + r.rows), o), {})).sort((a, b) => b[1] - a[1])[0];
+  $('f-q').textContent = `The largest group is ${qTop[0].replaceAll('_', ' ')} (${(100 * qTop[1] / raw).toFixed(2)}% of rows), mostly refunds and voided trips recorded as negative charges.`;
+
+  drawAll();
+  const mq = matchMedia('(prefers-color-scheme: dark)');
+  (mq.addEventListener ? mq.addEventListener('change', drawAll) : null);
+  new MutationObserver(drawAll).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+})();
+</script>
+</body>
+</html>
